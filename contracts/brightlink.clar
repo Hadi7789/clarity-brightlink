@@ -7,7 +7,9 @@
     name: (string-ascii 64),
     title: (string-ascii 64),
     about: (string-ascii 256),
-    visible: bool
+    visible: bool,
+    last-updated: uint,
+    tags: (list 10 (string-ascii 20))
   }
 )
 
@@ -16,7 +18,10 @@
   {
     notes: (string-ascii 256),
     added-at: uint,
-    status: (string-ascii 20)
+    status: (string-ascii 20),
+    category: (string-ascii 20),
+    is-archived: bool,
+    visibility: (string-ascii 10)
   }
 )
 
@@ -34,19 +39,27 @@
 (define-constant err-profile-not-found (err u101))
 (define-constant err-unauthorized (err u102))
 (define-constant err-invalid-contact (err u103))
+(define-constant err-invalid-timestamp (err u104))
 
-;; Profile management
+;; Events
+(define-data-var last-event-id uint u0)
+
 (define-public (create-profile (name (string-ascii 64)) (title (string-ascii 64)) (about (string-ascii 256)))
   (let ((profile-exists (map-get? profiles tx-sender)))
     (if (is-some profile-exists)
       err-profile-exists
-      (ok (map-set profiles tx-sender 
-        {
-          name: name,
-          title: title,
-          about: about,
-          visible: true
-        }
+      (ok (begin 
+        (map-set profiles tx-sender 
+          {
+            name: name,
+            title: title,
+            about: about,
+            visible: true,
+            last-updated: block-height,
+            tags: (list)
+          }
+        )
+        (print {event: "profile-created", user: tx-sender})
       ))
     )
   )
@@ -56,57 +69,72 @@
   (let ((profile (map-get? profiles tx-sender)))
     (if (is-none profile)
       err-profile-not-found
-      (ok (map-set profiles tx-sender
-        {
-          name: name,
-          title: title,
-          about: about,
-          visible: (get visible (unwrap-panic profile))
-        }
+      (ok (begin
+        (map-set profiles tx-sender
+          {
+            name: name,
+            title: title,
+            about: about,
+            visible: (get visible (unwrap-panic profile)),
+            last-updated: block-height,
+            tags: (get tags (unwrap-panic profile))
+          }
+        )
+        (print {event: "profile-updated", user: tx-sender})
       ))
     )
   )
 )
 
-;; Contact management 
-(define-public (add-contact (contact principal) (notes (string-ascii 256)))
+(define-public (add-contact (contact principal) (notes (string-ascii 256)) (category (string-ascii 20)))
   (if (and
     (not (is-eq tx-sender contact))
     (is-some (map-get? profiles contact)))
-    (ok (map-set contacts {owner: tx-sender, contact: contact}
-      {
-        notes: notes,
-        added-at: block-height,
-        status: "active"
-      }))
+    (ok (begin
+      (map-set contacts {owner: tx-sender, contact: contact}
+        {
+          notes: notes,
+          added-at: block-height,
+          status: "pending",
+          category: category,
+          is-archived: false,
+          visibility: "private"
+        })
+      (print {event: "contact-added", owner: tx-sender, contact: contact})
+    ))
     err-invalid-contact
   )
 )
 
-(define-public (update-contact-notes (contact principal) (notes (string-ascii 256)))
+(define-public (archive-contact (contact principal))
   (let ((contact-entry (map-get? contacts {owner: tx-sender, contact: contact})))
     (if (is-none contact-entry)
       err-invalid-contact
-      (ok (map-set contacts {owner: tx-sender, contact: contact}
-        (merge (unwrap-panic contact-entry)
-          { notes: notes }
+      (ok (begin
+        (map-set contacts {owner: tx-sender, contact: contact}
+          (merge (unwrap-panic contact-entry)
+            { is-archived: true }
+          )
         )
+        (print {event: "contact-archived", owner: tx-sender, contact: contact})
       ))
     )
   )
 )
 
-;; Reminder management
 (define-public (set-reminder (contact principal) (timestamp uint) (note (string-ascii 256)))
   (let ((contact-entry (map-get? contacts {owner: tx-sender, contact: contact})))
-    (if (is-none contact-entry)
-      err-invalid-contact
-      (ok (map-set reminders {owner: tx-sender, contact: contact}
-        {
-          timestamp: timestamp,
-          note: note,
-          completed: false
-        }
+    (if (or (is-none contact-entry) (< timestamp block-height))
+      err-invalid-timestamp
+      (ok (begin
+        (map-set reminders {owner: tx-sender, contact: contact}
+          {
+            timestamp: timestamp,
+            note: note,
+            completed: false
+          }
+        )
+        (print {event: "reminder-set", owner: tx-sender, contact: contact})
       ))
     )
   )
